@@ -435,13 +435,11 @@ class Watchdog:
                     # soft timeout, probe the app with a historical request
                     self._logger.debug('Soft timeout')
                     self.softTimeoutEvent.emit(self)
-                    probe = self.ib.reqHistoricalDataAsync(
-                        self.probeContract, '', '30 S', '5 secs',
-                        'MIDPOINT', False)
-                    bars = None
+                    ticker = self.ib.reqMktData(self.probeContract, snapshot=True)
+                    
                     with suppress(asyncio.TimeoutError):
-                        bars = await asyncio.wait_for(probe, self.probeTimeout)
-                    if not bars:
+                        bars = await asyncio.sleep(self.probeTimeout)
+                    if util.isNan(ticker.marketPrice()):
                         self.hardTimeoutEvent.emit(self)
                         raise Warning('Hard timeout')
                     self.ib.setTimeout(self.appTimeout)
