@@ -373,6 +373,7 @@ class Watchdog:
     account: str = ''
     probeContract: Contract = Forex('EURUSD')
     probeTimeout: float = 4
+    num_tollerated_soft_timeouts: int = 3
 
     def __post_init__(self):
         self.startingEvent = Event('startingEvent')
@@ -402,19 +403,41 @@ class Watchdog:
         self.ib.disconnect()
         self._runner = None
 
+    async def process_soft_timeout(self):
+        # soft timeout, probe the app with a historical request
+        self._logger.debug('Soft timeout')
+        self.softTimeoutEvent.emit(self)
+        ticker = self.ib.reqMktData(self.probeContract, snapshot=True)
+        
+        with suppress(asyncio.TimeoutError):
+            bars = await asyncio.sleep(self.probeTimeout)
+        
+        if util.isNan(ticker.marketPrice()):
+            soft_timeout_count += 1
+            
+            if (soft_timeout_count >= self.num_tollerated_soft_timeouts):
+                self.hardTimeoutEvent.emit(self)
+                soft_timeout_count = 0
+                raise Warning('Hard timeout')
+        else:
+            soft_timeout_count = 0
+        
+        self.ib.setTimeout(self.appTimeout)        
+                    
     async def runAsync(self):
-
+        soft_timeout_count = 0
+        
         def onTimeout(idlePeriod):
             if not waiter.done():
                 waiter.set_result(None)
 
         def onError(reqId, errorCode, errorString, contract):
             if errorCode in {100, 1100} and not waiter.done():
-                waiter.set_exception(Warning(f'Error {errorCode}'))
+                self._logger.warning(Warning(f'Error {errorCode}'))
 
         def onDisconnected():
             if not waiter.done():
-                waiter.set_exception(Warning('Disconnected'))
+                self._logger.warning(Warning('Disconnected'))
 
         while self._runner:
             try:
@@ -432,17 +455,7 @@ class Watchdog:
                 while self._runner:
                     waiter = asyncio.Future()
                     await waiter
-                    # soft timeout, probe the app with a historical request
-                    self._logger.debug('Soft timeout')
-                    self.softTimeoutEvent.emit(self)
-                    ticker = self.ib.reqMktData(self.probeContract, snapshot=True)
-                    
-                    with suppress(asyncio.TimeoutError):
-                        bars = await asyncio.sleep(self.probeTimeout)
-                    if util.isNan(ticker.marketPrice()):
-                        self.hardTimeoutEvent.emit(self)
-                        raise Warning('Hard timeout')
-                    self.ib.setTimeout(self.appTimeout)
+                    await self.process_soft_timeout()
 
             except ConnectionRefusedError:
                 pass
