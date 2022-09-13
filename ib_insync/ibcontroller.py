@@ -389,6 +389,7 @@ class Watchdog:
         if self.ib.isConnected():
             raise ValueError('IB instance must not be connected')
         self._runner = None
+        self.waiter = None
         self._logger = logging.getLogger('ib_insync.Watchdog')
 
     def start(self):
@@ -400,8 +401,9 @@ class Watchdog:
     def stop(self):
         self._logger.info('Stopping')
         self.stoppingEvent.emit(self)
-        self.ib.disconnect()
+        self.waiter.cancel()
         self._runner = None
+        self.ib.disconnect()
 
     async def process_soft_timeout(self):
         # soft timeout, probe the app with a historical request
@@ -428,15 +430,15 @@ class Watchdog:
         soft_timeout_count = 0
         
         def onTimeout(idlePeriod):
-            if not waiter.done():
-                waiter.set_result(None)
+            if not self.waiter.done():
+                self.waiter.set_result(None)
 
         def onError(reqId, errorCode, errorString, contract):
-            if errorCode in {100, 1100} and not waiter.done():
+            if errorCode in {100, 1100} and not self.waiter.done():
                 self._logger.warning(Warning(f'Error {errorCode}'))
 
         def onDisconnected():
-            if not waiter.done():
+            if not self.waiter.done():
                 self._logger.warning(Warning('Disconnected'))
 
         while self._runner:
@@ -453,8 +455,8 @@ class Watchdog:
                 self.ib.disconnectedEvent += onDisconnected
 
                 while self._runner:
-                    waiter = asyncio.Future()
-                    await waiter
+                    self.waiter = asyncio.Future()
+                    await self.waiter
                     await self.process_soft_timeout()
 
             except ConnectionRefusedError:
